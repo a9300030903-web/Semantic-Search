@@ -7,6 +7,7 @@ interface MediaFileRepository {
     fun getAllFiles(): Flow<List<MediaFile>>
     fun getVaultFiles(): Flow<List<MediaFile>>
     fun searchFilesFts(query: String): Flow<List<MediaFile>>
+    fun searchFilesFallback(queryPattern: String): Flow<List<MediaFile>>
     suspend fun getFileById(id: Int): MediaFile?
     suspend fun insertFile(file: MediaFile): Long
     suspend fun insertFiles(files: List<MediaFile>)

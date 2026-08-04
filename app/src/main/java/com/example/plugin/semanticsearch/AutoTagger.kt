@@ -1,13 +1,16 @@
 package com.example.plugin.semanticsearch
 
+import com.example.core.data.network.GeminiService
+import com.example.core.model.MediaFile
+
 /**
- * Phase 10: AI Intelligence - Auto Tags and Smart Categories
+ * Phase 10: AI Intelligence - Auto Tags and Smart Categories using Gemini AI API & Local Engine
  */
 class AutoTagger(private val semanticSearchEngine: SemanticSearchEngine) {
 
     // Pre-defined broad categories
     private val standardCategories = listOf(
-        "Invoices", "Receipts", "Personal Identity", "Family Photos", "Screenshots", "Memes", "Work Documents"
+        "Invoices", "Receipts", "Personal Identity", "Family Photos", "Screenshots", "Memes", "Work Documents", "Media"
     )
 
     /**
@@ -21,7 +24,7 @@ class AutoTagger(private val semanticSearchEngine: SemanticSearchEngine) {
 
         for (category in standardCategories) {
             val score = semanticSearchEngine.calculateSimilarity(category, combinedContext)
-            if (score > highestScore && score > 0.3f) { // Arbitrary threshold for mockup
+            if (score > highestScore && score > 0.3f) {
                 highestScore = score
                 bestCategory = category
             }
@@ -31,11 +34,23 @@ class AutoTagger(private val semanticSearchEngine: SemanticSearchEngine) {
     }
 
     /**
+     * Uses Gemini AI API to generate descriptive tags for a media file.
+     */
+    suspend fun generateTagsWithGemini(file: MediaFile, geminiService: GeminiService): String {
+        return geminiService.generateAutoTags(
+            fileName = file.name,
+            fileType = file.type,
+            mimeType = file.mimeType,
+            ocrText = file.ocrText
+        )
+    }
+
+    /**
      * Extracts comma-separated tags based on keyword frequency or semantic mapping.
      */
     fun generateTags(extractedText: String): String {
-        // Simplified mockup logic: just return some words longer than 5 chars
         val words = extractedText.split(Regex("\\s+")).filter { it.length > 5 }
-        return words.take(5).joinToString(",")
+        return words.take(5).joinToString(", ")
     }
 }
+

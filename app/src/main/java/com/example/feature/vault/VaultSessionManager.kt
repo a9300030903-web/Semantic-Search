@@ -6,6 +6,7 @@ import androidx.security.crypto.MasterKey
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.security.MessageDigest
 
 class VaultSessionManager(context: Context) {
     private val sharedPreferences = try {
@@ -29,8 +30,14 @@ class VaultSessionManager(context: Context) {
 
     private val PREF_PIN = "vault_pin"
 
+    private fun hashPin(pin: String): String {
+        val bytes = MessageDigest.getInstance("SHA-256").digest(("vvf_salt_" + pin).toByteArray(Charsets.UTF_8))
+        return bytes.joinToString("") { "%02x".format(it) }
+    }
+
     fun setPin(pin: String) {
-        sharedPreferences.edit().putString(PREF_PIN, pin).apply()
+        val hashedPin = hashPin(pin)
+        sharedPreferences.edit().putString(PREF_PIN, hashedPin).apply()
     }
 
     fun hasPin(): Boolean {
@@ -38,8 +45,9 @@ class VaultSessionManager(context: Context) {
     }
 
     fun verifyPin(pin: String): Boolean {
-        val storedPin = sharedPreferences.getString(PREF_PIN, null)
-        val isValid = storedPin == pin
+        val storedHash = sharedPreferences.getString(PREF_PIN, null)
+        val inputHash = hashPin(pin)
+        val isValid = storedHash != null && storedHash == inputHash
         if (isValid) {
             unlockVault()
         }
@@ -54,3 +62,4 @@ class VaultSessionManager(context: Context) {
         _isVaultUnlocked.value = false
     }
 }
+

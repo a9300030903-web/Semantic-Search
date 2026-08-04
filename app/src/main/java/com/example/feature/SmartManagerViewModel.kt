@@ -10,6 +10,7 @@ import com.example.feature.filemanager.CoreFileManager
 import com.example.feature.search.CoreSearchEngine
 import com.example.feature.vault.VaultSessionManager
 import com.example.feature.vault.BiometricAuthManager
+import com.example.plugin.cloud.GitHubSyncProvider
 import com.example.plugin.cloud.GoogleDriveProvider
 import com.example.plugin.ocr.OcrEngine
 import com.example.plugin.ocr.MlKitOcrEngine
@@ -21,6 +22,12 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -30,6 +37,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.update
 import java.io.File
 
 class SmartManagerViewModel(
@@ -39,6 +47,7 @@ class SmartManagerViewModel(
     private val autoTagger: AutoTagger,
     private val deepDuplicateCleaner: DeepDuplicateCleaner,
     private val driveProvider: GoogleDriveProvider,
+    val gitHubSyncProvider: GitHubSyncProvider,
     private val backgroundManager: BackgroundManager,
     private val vaultSessionManager: VaultSessionManager,
     private val vaultEncryptionManager: VaultEncryptionManager,
@@ -55,13 +64,72 @@ class SmartManagerViewModel(
     private val _isAssistantLoading = MutableStateFlow(false)
     val isAssistantLoading: StateFlow<Boolean> = _isAssistantLoading.asStateFlow()
 
+    // Auto-Tagging state
+    private val _isAutoTagging = MutableStateFlow(false)
+    val isAutoTagging: StateFlow<Boolean> = _isAutoTagging.asStateFlow()
+
+    private val _autoTagStatus = MutableStateFlow("")
+    val autoTagStatus: StateFlow<String> = _autoTagStatus.asStateFlow()
+
+    fun autoTagFile(file: MediaFile) {
+        viewModelScope.launch {
+            _isAutoTagging.value = true
+            _autoTagStatus.value = "Analyzing '${file.name}' with Gemini AI..."
+            try {
+                val generatedTags = autoTagger.generateTagsWithGemini(file, geminiService)
+                val newTags = if (file.tags.isBlank()) generatedTags else "${file.tags}, $generatedTags"
+                val updatedFile = file.copy(
+                    tags = newTags.split(",").map { it.trim() }.distinct().joinToString(", ")
+                )
+                mediaFileRepository.updateFile(updatedFile)
+                _selectedDetailFile.update { current ->
+                    if (current?.id == file.id) updatedFile else current
+                }
+                _autoTagStatus.value = "Generated tags for '${file.name}': $generatedTags"
+            } catch (e: Exception) {
+                _autoTagStatus.value = "Failed to tag file: ${e.localizedMessage ?: e.message}"
+            } finally {
+                _isAutoTagging.value = false
+            }
+        }
+    }
+
+    fun autoTagAllFiles() {
+        viewModelScope.launch {
+            val allFilesList = files.value
+            if (allFilesList.isEmpty()) {
+                _autoTagStatus.value = "No files available to auto-tag."
+                return@launch
+            }
+            _isAutoTagging.value = true
+            _autoTagStatus.value = "Starting Gemini AI batch auto-tagging..."
+            try {
+                var taggedCount = 0
+                for (file in allFilesList) {
+                    _autoTagStatus.value = "Auto-tagging [${taggedCount + 1}/${allFilesList.size}]: ${file.name}"
+                    val generatedTags = autoTagger.generateTagsWithGemini(file, geminiService)
+                    val updatedFile = file.copy(
+                        tags = generatedTags.split(",").map { it.trim() }.distinct().joinToString(", ")
+                    )
+                    mediaFileRepository.updateFile(updatedFile)
+                    taggedCount++
+                }
+                _autoTagStatus.value = "Successfully auto-tagged $taggedCount files with Gemini AI!"
+            } catch (e: Exception) {
+                _autoTagStatus.value = "Batch auto-tagging error: ${e.localizedMessage ?: e.message}"
+            } finally {
+                _isAutoTagging.value = false
+            }
+        }
+    }
+
     fun askCopilot(query: String) {
         if (query.isBlank()) return
         _isAssistantLoading.value = true
         viewModelScope.launch {
             try {
-                val localFiles = _files.value
-                val vaultCount = _vaultFiles.value.size
+                val localFiles = files.value
+                val vaultCount = vaultFiles.value.size
                 val isCloud = _isCloudConnected.value
                 val contextPrompt = "You are VVF Smart Manager AI Co-Pilot. Local files: $localFiles. Vault count: $vaultCount. Cloud status connected: $isCloud. User asks: $query"
                 _assistantResponse.value = geminiService.analyzeMedia(contextPrompt)
@@ -73,12 +141,22 @@ class SmartManagerViewModel(
         }
     }
 
-    // Background Scan WorkManager state
+    // Background WorkManager state
     val scanWorkState: StateFlow<MediaScanState> = backgroundManager.getScanWorkStateFlow().stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
         initialValue = MediaScanState()
     )
+
+    val cloudSyncWorkState: StateFlow<MediaScanState> = backgroundManager.getSyncWorkStateFlow().stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = MediaScanState()
+    )
+
+    fun triggerGitHubSync() {
+        backgroundManager.triggerImmediateCloudSync()
+    }
 
     private val _selectedDetailFile = MutableStateFlow<MediaFile?>(null)
     val selectedDetailFile: StateFlow<MediaFile?> = _selectedDetailFile.asStateFlow()
@@ -91,17 +169,34 @@ class SmartManagerViewModel(
         backgroundManager.triggerManualMediaScan()
     }
 
+    /**
+     * Phase 6: Secure Vault - Startup Authentication
+     * Uses biometric authentication to protect the entire media manager.
+     */
+    fun authenticateOnStartup(activity: androidx.fragment.app.FragmentActivity, onResult: (Boolean) -> Unit) {
+        if (!biometricAuthManager.isBiometricAvailable()) {
+            // Skip if no biometrics or device credentials (PIN/Pattern) enrolled
+            onResult(true)
+            return
+        }
+        biometricAuthManager.promptBiometricAuth(
+            activity = activity,
+            title = "VVF Smart Manager Secure Login",
+            subtitle = "Authenticate to access your private media",
+            onSuccess = {
+                onResult(true)
+            },
+            onError = { _ ->
+                onResult(false)
+            }
+        )
+    }
+
     // ----------------------------------------------------
     // UI State variables
     // ----------------------------------------------------
     private val _currentTab = MutableStateFlow(0) // 0=Dashboard, 1=Files, 2=Vault, 3=AI Search/OCR, 4=AI Duplicates, 5=Cloud, 6=Plugins
     val currentTab: StateFlow<Int> = _currentTab.asStateFlow()
-
-    private val _files = MutableStateFlow<List<MediaFile>>(emptyList())
-    val files: StateFlow<List<MediaFile>> = _files.asStateFlow()
-
-    private val _vaultFiles = MutableStateFlow<List<MediaFile>>(emptyList())
-    val vaultFiles: StateFlow<List<MediaFile>> = _vaultFiles.asStateFlow()
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
@@ -120,6 +215,20 @@ class SmartManagerViewModel(
         )
     )
     val plugins: StateFlow<Map<String, Boolean>> = _plugins.asStateFlow()
+
+    // ----------------------------------------------------
+    // Files State Management (Optimized with stateIn)
+    // ----------------------------------------------------
+    private val allFilesFlow = mediaFileRepository.getAllFiles()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val files: StateFlow<List<MediaFile>> = allFilesFlow.map { list ->
+        list.filter { !it.isEncrypted }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val vaultFiles: StateFlow<List<MediaFile>> = allFilesFlow.map { list ->
+        list.filter { it.isEncrypted }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     // OCR Screen State
     private val _selectedOcrFile = MutableStateFlow<MediaFile?>(null)
@@ -173,78 +282,39 @@ class SmartManagerViewModel(
             vaultSessionManager.setPin("1234")
         }
 
-        // Pre-populate dummy initial data if database is empty
+        // Trigger background media scan on first startup
         viewModelScope.launch {
-            mediaFileRepository.getAllFiles().collect { dbFiles ->
-                if (dbFiles.isEmpty()) {
-                    prepopulateDatabase()
-                } else {
-                    _files.value = dbFiles.filter { !it.isEncrypted }
-                    _vaultFiles.value = dbFiles.filter { it.isEncrypted }
-                    updateSemanticDuplicates()
-                }
+            val initialFiles = mediaFileRepository.getAllFiles().first()
+            if (initialFiles.isEmpty()) {
+                backgroundManager.triggerManualMediaScan()
             }
         }
-    }
 
-    private suspend fun prepopulateDatabase() {
-        val dummy = listOf(
-            MediaFile(
-                name = "family_holiday_hawaii.jpg",
-                path = "/sdcard/VVFManager/family_holiday_hawaii.jpg",
-                type = "Image",
-                mimeType = "image/jpeg",
-                size = 2450000L,
-                tags = "family, vacation, beach",
-                ocrText = "ALOHA FROM HAWAII BEACH PARK MAY 2026"
-            ),
-            MediaFile(
-                name = "receipt_starbucks_coffee.jpg",
-                path = "/sdcard/VVFManager/receipt_starbucks_coffee.jpg",
-                type = "Image",
-                mimeType = "image/jpeg",
-                size = 450000L,
-                tags = "receipt, coffee, business",
-                ocrText = "STARBUCKS COFFEE STORE #1432 DATE: 12/05/2026 COFFEE GRANDE $5.45 TOTAL: $5.45"
-            ),
-            MediaFile(
-                name = "invoice_aws_cloud.pdf",
-                path = "/sdcard/VVFManager/invoice_aws_cloud.pdf",
-                type = "Document",
-                mimeType = "application/pdf",
-                size = 1250000L,
-                tags = "invoice, work, amazon",
-                ocrText = "AMAZON WEB SERVICES INVOICE INVOICE DATE: 15/06/2026 TOTAL DUE: $124.50 ACCOUNT ID: 1234-5678"
-            ),
-            MediaFile(
-                name = "invoice_aws_cloud_copy.pdf",
-                path = "/sdcard/VVFManager/invoice_aws_cloud_copy.pdf",
-                type = "Document",
-                mimeType = "application/pdf",
-                size = 1250000L,
-                tags = "invoice, work, amazon",
-                ocrText = "AMAZON WEB SERVICES INVOICE INVOICE DATE: 15/06/2026 TOTAL DUE: $124.50 ACCOUNT ID: 1234-5678"
-            ),
-            MediaFile(
-                name = "project_demo_video.mp4",
-                path = "/sdcard/VVFManager/project_demo_video.mp4",
-                type = "Video",
-                mimeType = "video/mp4",
-                size = 45000000L,
-                tags = "work, demo, presentation",
-                ocrText = ""
-            ),
-            MediaFile(
-                name = "passport_scan.jpg",
-                path = "/sdcard/VVFManager/passport_scan.jpg",
-                type = "Image",
-                mimeType = "image/jpeg",
-                size = 1800000L,
-                tags = "personal, identity, travel",
-                ocrText = "REPUBLIC OF INDIA PASSPORT PASSPORT NO: Z1234567 GIVEN NAMES: RAJESH SHARMA"
-            )
-        )
-        mediaFileRepository.insertFiles(dummy)
+        // Debounced Semantic Duplicate Calculation
+        viewModelScope.launch {
+            @OptIn(FlowPreview::class)
+            files.debounce(500L).collect {
+                updateSemanticDuplicates()
+            }
+        }
+
+        // Setup reactive debounced search flow pipeline
+        viewModelScope.launch {
+            @OptIn(FlowPreview::class, ExperimentalCoroutinesApi::class)
+            _searchQuery
+                .debounce(200L)
+                .distinctUntilChanged()
+                .flatMapLatest { query ->
+                    if (query.isBlank()) {
+                        flowOf(emptyList())
+                    } else {
+                        coreSearchEngine.searchFiles(query)
+                    }
+                }
+                .collect { results ->
+                    _searchResults.value = results
+                }
+        }
     }
 
     fun selectTab(tab: Int) {
@@ -336,24 +406,11 @@ class SmartManagerViewModel(
         }
     }
 
-    private var searchJob: Job? = null
-
     // ----------------------------------------------------
     // AI Search and OCR Engine Operations
     // ----------------------------------------------------
     fun updateSearchQuery(query: String) {
         _searchQuery.value = query
-        searchJob?.cancel()
-        if (query.isBlank()) {
-            _searchResults.value = emptyList()
-            return
-        }
-
-        searchJob = viewModelScope.launch {
-            coreSearchEngine.searchFiles(query).collect { results ->
-                _searchResults.value = results
-            }
-        }
     }
 
     fun selectOcrFile(file: MediaFile?) {
@@ -414,7 +471,7 @@ class SmartManagerViewModel(
     }
 
     private suspend fun updateSemanticDuplicates() {
-        val items = _files.value
+        val items = files.value
         if (items.size < 2) {
             _semanticDuplicates.value = emptyList()
             return
@@ -460,12 +517,14 @@ class SmartManagerViewModel(
     }
 
     fun addToCloudQueue(file: MediaFile) {
-        val current = _cloudQueue.value.toMutableList()
-        if (!current.contains(file)) {
-            current.add(file)
-            _cloudQueue.value = current
-            addCloudLog("Added ${file.name} to Cloud upload queue.")
+        _cloudQueue.update { current ->
+            if (!current.contains(file)) {
+                current + file
+            } else {
+                current
+            }
         }
+        addCloudLog("Added ${file.name} to Cloud upload queue.")
     }
 
     fun syncCloudQueue() {
@@ -488,9 +547,7 @@ class SmartManagerViewModel(
                     kotlinx.coroutines.delay(1000) // upload delay simulation
                     addCloudLog("Uploaded ${file.name} successfully.")
                     
-                    val currentQueue = _cloudQueue.value.toMutableList()
-                    currentQueue.remove(file)
-                    _cloudQueue.value = currentQueue
+                    _cloudQueue.update { current -> current.filter { it.id != file.id } }
                 }
                 addCloudLog("All pending files synced to Google Drive.")
             } catch (e: Exception) {
@@ -502,8 +559,9 @@ class SmartManagerViewModel(
     }
 
     private fun addCloudLog(log: String) {
-        val current = _cloudLogs.value.toMutableList()
-        current.add(0, "[${java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())}] $log")
-        _cloudLogs.value = current.take(50) // keep last 50 logs
+        _cloudLogs.update { current ->
+            val newLog = "[${java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())}] $log"
+            (listOf(newLog) + current).take(50)
+        }
     }
 }

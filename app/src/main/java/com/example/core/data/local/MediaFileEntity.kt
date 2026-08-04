@@ -9,7 +9,8 @@ import com.example.core.model.MediaFile
     tableName = "media_files",
     indices = [
         Index(value = ["isEncrypted"]),
-        Index(value = ["modifiedAt"])
+        Index(value = ["modifiedAt"]),
+        Index(value = ["path"], unique = true)
     ]
 )
 data class MediaFileEntity(

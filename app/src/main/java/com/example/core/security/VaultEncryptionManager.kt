@@ -1,5 +1,7 @@
 package com.example.core.security
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -8,17 +10,17 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 class VaultEncryptionManager {
-    private val cipher = Cipher.getInstance("AES/GCM/NoPadding")
     private val masterKey: SecretKey = KeystoreManager.getOrGenerateMasterKey()
 
-    fun encryptFile(inputFile: File, outputFile: File) {
+    suspend fun encryptFile(inputFile: File, outputFile: File) = withContext(Dispatchers.IO) {
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, masterKey)
         val iv = cipher.iv
 
         FileInputStream(inputFile).use { fis ->
             FileOutputStream(outputFile).use { fos ->
                 fos.write(iv) // Store IV at the beginning of the file
-                val buffer = ByteArray(1024)
+                val buffer = ByteArray(8192)
                 var bytesRead: Int
                 while (fis.read(buffer).also { bytesRead = it } != -1) {
                     val output = cipher.update(buffer, 0, bytesRead)
@@ -30,15 +32,25 @@ class VaultEncryptionManager {
         }
     }
 
-    fun decryptFile(inputFile: File, outputFile: File) {
+    suspend fun decryptFile(inputFile: File, outputFile: File) = withContext(Dispatchers.IO) {
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         FileInputStream(inputFile).use { fis ->
             val iv = ByteArray(12) // GCM standard IV length
-            fis.read(iv)
+            var totalRead = 0
+            while (totalRead < 12) {
+                val read = fis.read(iv, totalRead, 12 - totalRead)
+                if (read == -1) break
+                totalRead += read
+            }
+            if (totalRead < 12) {
+                throw java.io.IOException("Invalid encrypted file header: truncated IV")
+            }
+
             val spec = GCMParameterSpec(128, iv)
             cipher.init(Cipher.DECRYPT_MODE, masterKey, spec)
 
             FileOutputStream(outputFile).use { fos ->
-                val buffer = ByteArray(1024)
+                val buffer = ByteArray(8192)
                 var bytesRead: Int
                 while (fis.read(buffer).also { bytesRead = it } != -1) {
                     val output = cipher.update(buffer, 0, bytesRead)
@@ -50,3 +62,4 @@ class VaultEncryptionManager {
         }
     }
 }
+

@@ -6,67 +6,74 @@ import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.example.core.data.repository.MediaFileRepository
 import com.example.core.model.MediaFile
+import com.example.feature.filemanager.CoreFileManager
 import kotlinx.coroutines.delay
-import org.koin.core.component.KoinComponent
-import org.koin.core.component.inject
+import java.io.File
 
 class MediaScanWorker(
     appContext: Context,
-    workerParams: WorkerParameters
-) : CoroutineWorker(appContext, workerParams), KoinComponent {
-
-    private val mediaFileRepository: MediaFileRepository by inject()
+    workerParams: WorkerParameters,
+    private val mediaFileRepository: MediaFileRepository,
+    private val coreFileManager: CoreFileManager
+) : CoroutineWorker(appContext, workerParams) {
 
     override suspend fun doWork(): Result {
         // Set initial progress
         setProgress(workDataOf("progress" to 0))
-        delay(500)
+        if (isStopped) return Result.failure()
 
         // Step 1: Initialize Scan
         setProgress(workDataOf("progress" to 10, "status" to "Scanning /sdcard/VVFManager..."))
-        delay(800)
+        if (isStopped) return Result.failure()
+        delay(300)
 
         // Step 2: Read Existing Files and Simulate Indexing
         setProgress(workDataOf("progress" to 30, "status" to "Analyzing metadata..."))
-        delay(800)
+        if (isStopped) return Result.failure()
+
+        // Scan actual storage directory safely if available
+        val targetDir = File(applicationContext.getExternalFilesDir(null) ?: applicationContext.filesDir, "VVFManager")
+        if (!targetDir.exists()) {
+            targetDir.mkdirs()
+        }
+
+        val discoveredFiles = coreFileManager.scanDirectoryRecursively(targetDir)
+        if (isStopped) return Result.failure()
 
         // Step 3: Deep Scan
         setProgress(workDataOf("progress" to 60, "status" to "Computing semantic hashes..."))
-        delay(800)
+        if (isStopped) return Result.failure()
+        delay(300)
 
-        // Step 4: Add scanned items if missing to show real action!
-        val scanItems = listOf(
-            MediaFile(
-                name = "quarterly_budget_2026.pdf",
-                path = "/sdcard/VVFManager/quarterly_budget_2026.pdf",
-                type = "Document",
-                mimeType = "application/pdf",
-                size = 3500000L,
-                tags = "finance, budget, work",
-                ocrText = "VISHWA VIJAYA FOUNDATION QUARTERLY REPORT BUDGET 2026 AUDITED"
-            ),
-            MediaFile(
-                name = "foundation_day_celebration.jpg",
-                path = "/sdcard/VVFManager/foundation_day_celebration.jpg",
-                type = "Image",
-                mimeType = "image/jpeg",
-                size = 5400000L,
-                tags = "celebration, foundation, event",
-                ocrText = "VVF FOUNDATION DAY 15 JULY 2026"
+        // Step 4: Add scanned items
+        val scanItems = mutableListOf<MediaFile>()
+        
+        for (f in discoveredFiles) {
+            if (isStopped) return Result.failure()
+            scanItems.add(
+                MediaFile(
+                    name = f.name,
+                    path = f.absolutePath,
+                    type = if (f.name.endsWith(".jpg") || f.name.endsWith(".png")) "Image" else "Document",
+                    mimeType = if (f.name.endsWith(".jpg")) "image/jpeg" else "application/pdf",
+                    size = f.length()
+                )
             )
-        )
+        }
 
-        for (item in scanItems) {
-            mediaFileRepository.insertFile(item)
+        if (scanItems.isNotEmpty()) {
+            if (isStopped) return Result.failure()
+            mediaFileRepository.insertFiles(scanItems)
         }
 
         setProgress(workDataOf("progress" to 85, "status" to "Saving to local secure storage..."))
-        delay(800)
+        if (isStopped) return Result.failure()
+        delay(300)
 
         // Done
         setProgress(workDataOf("progress" to 100, "status" to "Media Scan completed!"))
-        delay(400)
 
         return Result.success()
     }
 }
+

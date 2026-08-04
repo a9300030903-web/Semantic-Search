@@ -28,6 +28,12 @@ class MediaFileRepositoryImpl(
         }
     }
 
+    override fun searchFilesFallback(queryPattern: String): Flow<List<MediaFile>> {
+        return mediaFileDao.searchFilesFallback(queryPattern).map { entities ->
+            entities.map { it.toDomain() }
+        }
+    }
+
     override suspend fun getFileById(id: Int): MediaFile? {
         return mediaFileDao.getFileById(id)?.toDomain()
     }

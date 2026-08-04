@@ -1,10 +1,18 @@
 package com.example
 
 import android.os.Bundle
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
+import androidx.fragment.app.FragmentActivity
 import androidx.compose.animation.*
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -41,12 +49,28 @@ import com.example.ui.theme.CosmicBlue
 import com.example.ui.theme.EmeraldGreen
 import com.example.ui.theme.SkyCyan
 import com.example.ui.theme.SoftGold
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import org.koin.androidx.compose.koinViewModel
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
+
+    private val requestPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted: Boolean ->
+        // Handle permission result if needed
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // Request notification permission for Android 13+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+
         enableEdgeToEdge()
         setContent {
             AppTheme {
@@ -55,10 +79,36 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.background
                 ) {
                     var showSplash by remember { mutableStateOf(true) }
+                    var isAuthenticated by remember { mutableStateOf(false) }
+                    
+                    val viewModel: com.example.feature.SmartManagerViewModel = koinViewModel()
+                    
                     if (showSplash) {
-                        com.example.ui.SplashScreen(onTimeout = { showSplash = false })
+                        com.example.ui.SplashScreen(onTimeout = { 
+                            // When splash ends, trigger biometric auth
+                            viewModel.authenticateOnStartup(this) { success ->
+                                if (success) {
+                                    isAuthenticated = true
+                                    showSplash = false
+                                } else {
+                                    // Handle failure (e.g., stay on splash or show error)
+                                    // For now, we allow retry or exit
+                                }
+                            }
+                        })
+                    } else if (isAuthenticated) {
+                        MainAppContent(viewModel = viewModel)
                     } else {
-                        MainAppContent()
+                        // Fallback if not authenticated but splash is gone
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Button(onClick = {
+                                viewModel.authenticateOnStartup(this@MainActivity) { success ->
+                                    if (success) isAuthenticated = true
+                                }
+                            }) {
+                                Text("Retry Authentication")
+                            }
+                        }
                     }
                 }
             }
@@ -69,11 +119,11 @@ class MainActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainAppContent(viewModel: SmartManagerViewModel = koinViewModel()) {
-    val currentTab by viewModel.currentTab.collectAsState()
-    val plugins by viewModel.plugins.collectAsState()
-    val isVaultLocked by viewModel.isVaultLocked.collectAsState()
-    val selectedDetailFile by viewModel.selectedDetailFile.collectAsState()
-    val scanWorkState by viewModel.scanWorkState.collectAsState()
+    val currentTab by viewModel.currentTab.collectAsStateWithLifecycle()
+    val plugins by viewModel.plugins.collectAsStateWithLifecycle()
+    val isVaultLocked by viewModel.isVaultLocked.collectAsStateWithLifecycle()
+    val selectedDetailFile by viewModel.selectedDetailFile.collectAsStateWithLifecycle()
+    val scanWorkState by viewModel.scanWorkState.collectAsStateWithLifecycle()
 
     val isScanning = scanWorkState.isScanning
     val progress = scanWorkState.progress
@@ -81,7 +131,7 @@ fun MainAppContent(viewModel: SmartManagerViewModel = koinViewModel()) {
 
     // Observe selected detail file to show the dialog
     selectedDetailFile?.let { file ->
-        MediaDetailDialog(file = file, onDismiss = { viewModel.selectDetailFile(null) })
+        MediaDetailDialog(file = file, viewModel = viewModel, onDismiss = { viewModel.selectDetailFile(null) })
     }
 
     Scaffold(
@@ -229,14 +279,14 @@ fun MainAppContent(viewModel: SmartManagerViewModel = koinViewModel()) {
 // ========================================================
 @Composable
 fun DashboardScreen(viewModel: SmartManagerViewModel) {
-    val files by viewModel.files.collectAsState()
-    val vaultFiles by viewModel.vaultFiles.collectAsState()
-    val isVaultLocked by viewModel.isVaultLocked.collectAsState()
-    val isCloudConnected by viewModel.isCloudConnected.collectAsState()
-    val plugins by viewModel.plugins.collectAsState()
+    val files by viewModel.files.collectAsStateWithLifecycle()
+    val vaultFiles by viewModel.vaultFiles.collectAsStateWithLifecycle()
+    val isVaultLocked by viewModel.isVaultLocked.collectAsStateWithLifecycle()
+    val isCloudConnected by viewModel.isCloudConnected.collectAsStateWithLifecycle()
+    val plugins by viewModel.plugins.collectAsStateWithLifecycle()
 
-    val assistantResponse by viewModel.assistantResponse.collectAsState()
-    val isAssistantLoading by viewModel.isAssistantLoading.collectAsState()
+    val assistantResponse by viewModel.assistantResponse.collectAsStateWithLifecycle()
+    val isAssistantLoading by viewModel.isAssistantLoading.collectAsStateWithLifecycle()
     var assistantQuery by remember { mutableStateOf("") }
     val coroutineScope = rememberCoroutineScope()
 
@@ -247,7 +297,7 @@ fun DashboardScreen(viewModel: SmartManagerViewModel) {
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         // Welcome Header Banner
-        item {
+        item(key = "header") {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -291,7 +341,7 @@ fun DashboardScreen(viewModel: SmartManagerViewModel) {
         }
 
         // VVF AI Assistant
-        item {
+        item(key = "assistant") {
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
@@ -341,7 +391,7 @@ fun DashboardScreen(viewModel: SmartManagerViewModel) {
         }
 
         // Summary Statistics Grid
-        item {
+        item(key = "statistics") {
             Text("System Summary", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Spacer(modifier = Modifier.height(8.dp))
             Row(
@@ -411,35 +461,45 @@ fun DashboardScreen(viewModel: SmartManagerViewModel) {
             }
         }
 
-        // 4. File Type Distribution and Media Summary Dashboard
-        item {
-            Spacer(modifier = Modifier.height(8.dp))
-            Text("Media Distribution", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = CosmicBlue)
-            Spacer(modifier = Modifier.height(4.dp))
-            
-            val images = files.filter { it.type == "Image" }
-            val videos = files.filter { it.type == "Video" }
-            val docs = files.filter { it.type == "Document" }
-            
-            val totalSize = files.sumOf { it.size }
-            
+        // Data Safety & Privacy Info
+        item(key = "privacy_info") {
             Card(
-                modifier = Modifier.fillMaxWidth(),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                colors = CardDefaults.cardColors(containerColor = EmeraldGreen.copy(alpha = 0.1f)),
+                border = androidx.compose.foundation.BorderStroke(1.dp, EmeraldGreen.copy(alpha = 0.3f))
             ) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("Total Indexed Space: ${totalSize / 1024} KB", fontWeight = FontWeight.Bold, color = CosmicBlue, fontSize = 14.sp)
-                    
-                    DistributionRow(type = "Images", count = images.size, size = images.sumOf { it.size }, color = BhagwaOrange, totalCount = files.size)
-                    DistributionRow(type = "Videos", count = videos.size, size = videos.sumOf { it.size }, color = CosmicBlue, totalCount = files.size)
-                    DistributionRow(type = "Documents", count = docs.size, size = docs.sumOf { it.size }, color = EmeraldGreen, totalCount = files.size)
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.Info, contentDescription = "Privacy Info", tint = EmeraldGreen)
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Text("Data Safety & Privacy", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = CosmicBlue)
+                        Text(
+                            "VVF Smart Manager processes your media locally. Sync to Cloud (Drive/GitHub) is optional and encrypted.",
+                            fontSize = 11.sp,
+                            lineHeight = 14.sp
+                        )
+                    }
                 }
             }
         }
 
+        // 4. Disk Space Breakdown Donut Widget
+        item(key = "disk_usage") {
+            Spacer(modifier = Modifier.height(8.dp))
+            DiskSpaceUsageWidget(files = files, vaultFiles = vaultFiles)
+        }
+
+        // 5. Gemini AI Auto-Tagging Hub Widget
+        item(key = "auto_tagging") {
+            Spacer(modifier = Modifier.height(8.dp))
+            GeminiAutoTaggingCard(viewModel = viewModel)
+        }
+
         // 5. Recently Indexed Media
-        item {
+        item(key = "recent_media") {
             Spacer(modifier = Modifier.height(8.dp))
             Text("Recently Indexed Media", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = CosmicBlue)
             Spacer(modifier = Modifier.height(4.dp))
@@ -505,8 +565,8 @@ fun DashboardScreen(viewModel: SmartManagerViewModel) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FilesScreen(viewModel: SmartManagerViewModel) {
-    val files by viewModel.files.collectAsState()
-    val plugins by viewModel.plugins.collectAsState()
+    val files by viewModel.files.collectAsStateWithLifecycle()
+    val plugins by viewModel.plugins.collectAsStateWithLifecycle()
 
     var showAddDialog by remember { mutableStateOf(false) }
     var newFileName by remember { mutableStateOf("") }
@@ -574,12 +634,13 @@ fun FilesScreen(viewModel: SmartManagerViewModel) {
                     }
                 }
             } else {
+                val dateFormat = remember { java.text.SimpleDateFormat("dd/MM/yyyy HH:mm", java.util.Locale.getDefault()) }
                 LazyColumn(
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     duplicates.forEach { (key, list) ->
-                        item {
+                        item(key = key) {
                             Card(
                                 modifier = Modifier.fillMaxWidth(),
                                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
@@ -595,7 +656,7 @@ fun FilesScreen(viewModel: SmartManagerViewModel) {
                                         ) {
                                             Column(modifier = Modifier.weight(1f)) {
                                                 Text(file.name, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                                                Text("Size: ${file.size / 1024} KB • Modified: ${java.text.SimpleDateFormat("dd/MM/yyyy HH:mm", java.util.Locale.getDefault()).format(java.util.Date(file.modifiedAt))}", fontSize = 11.sp, color = Color.Gray)
+                                                Text("Size: ${file.size / 1024} KB • Modified: ${dateFormat.format(java.util.Date(file.modifiedAt))}", fontSize = 11.sp, color = Color.Gray)
                                             }
                                             Row {
                                                 if (index > 0) {
@@ -630,7 +691,7 @@ fun FilesScreen(viewModel: SmartManagerViewModel) {
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(files) { file ->
+                    items(files, key = { it.id }) { file ->
                         Card(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -803,10 +864,10 @@ fun FilesScreen(viewModel: SmartManagerViewModel) {
 // ========================================================
 @Composable
 fun VaultScreen(viewModel: SmartManagerViewModel) {
-    val isVaultLocked by viewModel.isVaultLocked.collectAsState()
-    val vaultPinInput by viewModel.vaultPinInput.collectAsState()
-    val vaultErrorMessage by viewModel.vaultErrorMessage.collectAsState()
-    val vaultFiles by viewModel.vaultFiles.collectAsState()
+    val isVaultLocked by viewModel.isVaultLocked.collectAsStateWithLifecycle()
+    val vaultPinInput by viewModel.vaultPinInput.collectAsStateWithLifecycle()
+    val vaultErrorMessage by viewModel.vaultErrorMessage.collectAsStateWithLifecycle()
+    val vaultFiles by viewModel.vaultFiles.collectAsStateWithLifecycle()
 
     if (isVaultLocked) {
         // Vault Lock Screen
@@ -904,7 +965,7 @@ fun VaultScreen(viewModel: SmartManagerViewModel) {
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(vaultFiles) { file ->
+                    items(vaultFiles, key = { it.id }) { file ->
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             colors = CardDefaults.cardColors(containerColor = CosmicBlue.copy(alpha = 0.04f)),
@@ -943,16 +1004,16 @@ fun VaultScreen(viewModel: SmartManagerViewModel) {
 // ========================================================
 @Composable
 fun AISearchScreen(viewModel: SmartManagerViewModel) {
-    val searchQuery by viewModel.searchQuery.collectAsState()
-    val searchResults by viewModel.searchResults.collectAsState()
-    val plugins by viewModel.plugins.collectAsState()
-    val files by viewModel.files.collectAsState()
+    val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
+    val searchResults by viewModel.searchResults.collectAsStateWithLifecycle()
+    val plugins by viewModel.plugins.collectAsStateWithLifecycle()
+    val files by viewModel.files.collectAsStateWithLifecycle()
 
-    val selectedOcrFile by viewModel.selectedOcrFile.collectAsState()
-    val extractedOcrText by viewModel.extractedOcrText.collectAsState()
-    val suggestedTags by viewModel.suggestedTags.collectAsState()
-    val suggestedCategory by viewModel.suggestedCategory.collectAsState()
-    val isOcrLoading by viewModel.isOcrLoading.collectAsState()
+    val selectedOcrFile by viewModel.selectedOcrFile.collectAsStateWithLifecycle()
+    val extractedOcrText by viewModel.extractedOcrText.collectAsStateWithLifecycle()
+    val suggestedTags by viewModel.suggestedTags.collectAsStateWithLifecycle()
+    val suggestedCategory by viewModel.suggestedCategory.collectAsStateWithLifecycle()
+    val isOcrLoading by viewModel.isOcrLoading.collectAsStateWithLifecycle()
 
     var activeSearchTab by remember { mutableStateOf(0) } // 0=AI Hybrid Search, 1=ML Kit OCR
 
@@ -1008,15 +1069,26 @@ fun AISearchScreen(viewModel: SmartManagerViewModel) {
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(searchResults) { file ->
-                        val matchedScore = remember(searchQuery) {
-                            // Calculate match score to show user
-                            val qTokens = searchQuery.lowercase().split(" ").toSet()
-                            val combined = "${file.name} ${file.tags} ${file.ocrText}".lowercase()
-                            val tTokens = combined.split(" ").toSet()
-                            val intersect = qTokens.intersect(tTokens).size
-                            val union = qTokens.union(tTokens).size
-                            if (union == 0) 0f else (intersect.toFloat() / union.toFloat())
+                    items(searchResults, key = { it.id }) { file ->
+                        val matchedScore = remember(searchQuery, file) {
+                            val qLower = searchQuery.lowercase().trim()
+                            val qTokens = qLower.split("\\s+".toRegex()).filter { it.isNotBlank() }
+                            if (qTokens.isEmpty()) 0.1f
+                            else {
+                                var score = 0.2f
+                                val nameL = file.name.lowercase()
+                                val tagsL = file.tags.lowercase()
+                                val ocrL = file.ocrText.lowercase()
+                                if (nameL.contains(qLower)) score += 0.5f
+                                if (tagsL.contains(qLower)) score += 0.3f
+                                if (ocrL.contains(qLower)) score += 0.2f
+                                for (tok in qTokens) {
+                                    if (nameL.contains(tok)) score += 0.2f
+                                    if (tagsL.contains(tok)) score += 0.15f
+                                    if (ocrL.contains(tok)) score += 0.1f
+                                }
+                                score.coerceIn(0.1f, 0.99f)
+                            }
                         }
                         Card(
                             modifier = Modifier
@@ -1070,7 +1142,7 @@ fun AISearchScreen(viewModel: SmartManagerViewModel) {
                         modifier = Modifier.weight(1f),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        items(files) { file ->
+                        items(files, key = { it.id }) { file ->
                             Card(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -1183,9 +1255,9 @@ fun AISearchScreen(viewModel: SmartManagerViewModel) {
 // ========================================================
 @Composable
 fun AIIntelligenceScreen(viewModel: SmartManagerViewModel) {
-    val similarityThreshold by viewModel.similarityThreshold.collectAsState()
-    val semanticDuplicates by viewModel.semanticDuplicates.collectAsState()
-    val plugins by viewModel.plugins.collectAsState()
+    val similarityThreshold by viewModel.similarityThreshold.collectAsStateWithLifecycle()
+    val semanticDuplicates by viewModel.semanticDuplicates.collectAsStateWithLifecycle()
+    val plugins by viewModel.plugins.collectAsStateWithLifecycle()
 
     Column(
         modifier = Modifier
@@ -1250,7 +1322,7 @@ fun AIIntelligenceScreen(viewModel: SmartManagerViewModel) {
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    items(semanticDuplicates) { pair ->
+                    items(semanticDuplicates, key = { it.first.id.toString() + "_" + it.second.id.toString() }) { pair ->
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
@@ -1311,118 +1383,215 @@ fun AIIntelligenceScreen(viewModel: SmartManagerViewModel) {
 // ========================================================
 @Composable
 fun CloudScreen(viewModel: SmartManagerViewModel) {
-    val cloudSyncing by viewModel.cloudSyncing.collectAsState()
-    val cloudQueue by viewModel.cloudQueue.collectAsState()
-    val cloudLogs by viewModel.cloudLogs.collectAsState()
-    val isCloudConnected by viewModel.isCloudConnected.collectAsState()
-    val plugins by viewModel.plugins.collectAsState()
+    val cloudSyncing by viewModel.cloudSyncing.collectAsStateWithLifecycle()
+    val cloudQueue by viewModel.cloudQueue.collectAsStateWithLifecycle()
+    val cloudLogs by viewModel.cloudLogs.collectAsStateWithLifecycle()
+    val isCloudConnected by viewModel.isCloudConnected.collectAsStateWithLifecycle()
+    val plugins by viewModel.plugins.collectAsStateWithLifecycle()
+    val cloudSyncWorkState by viewModel.cloudSyncWorkState.collectAsStateWithLifecycle()
 
-    Column(
+    var gitHubOwner by remember { mutableStateOf(viewModel.gitHubSyncProvider.repoOwner) }
+    var gitHubRepo by remember { mutableStateOf(viewModel.gitHubSyncProvider.repoName) }
+    var gitHubToken by remember { mutableStateOf(viewModel.gitHubSyncProvider.personalAccessToken) }
+    var showTokenConfig by remember { mutableStateOf(false) }
+
+    LazyColumn(
         modifier = Modifier
             .fillMaxSize()
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Column {
-            Text("Cloud Integration Manager", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = CosmicBlue)
-            Text("Phase 11: Real-time Drive + Companion Plugins Sync", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+        item {
+            Column {
+                Text("Cloud & Repository Sync Manager", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = CosmicBlue)
+                Text("Phase 11 & 12: WorkManager Background Sync & Cloud Plugins", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            }
+        }
+
+        // GitHub Linked Repository Sync Card
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                elevation = CardDefaults.cardElevation(defaultElevation = 3.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("🐙", fontSize = 24.sp)
+                            Column {
+                                Text("GitHub Repo Metadata Sync", fontWeight = FontWeight.Bold, color = CosmicBlue)
+                                Text("WorkManager background push: $gitHubOwner/$gitHubRepo", fontSize = 11.sp, color = Color.Gray)
+                            }
+                        }
+                        IconButton(onClick = { showTokenConfig = !showTokenConfig }) {
+                            Icon(Icons.Default.Settings, contentDescription = "Config Repo", tint = CosmicBlue)
+                        }
+                    }
+
+                    if (showTokenConfig) {
+                        OutlinedTextField(
+                            value = gitHubOwner,
+                            onValueChange = { gitHubOwner = it; viewModel.gitHubSyncProvider.repoOwner = it },
+                            label = { Text("Repository Owner/Org") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+                        OutlinedTextField(
+                            value = gitHubRepo,
+                            onValueChange = { gitHubRepo = it; viewModel.gitHubSyncProvider.repoName = it },
+                            label = { Text("Repository Name") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+                        OutlinedTextField(
+                            value = gitHubToken,
+                            onValueChange = { gitHubToken = it; viewModel.gitHubSyncProvider.personalAccessToken = it },
+                            label = { Text("GitHub Personal Access Token (Optional)") },
+                            visualTransformation = PasswordVisualTransformation(),
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+                    }
+
+                    if (cloudSyncWorkState.isScanning) {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("WorkManager Sync Active...", fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = BhagwaOrange)
+                                Text("${cloudSyncWorkState.progress}%", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = BhagwaOrange)
+                            }
+                            LinearProgressIndicator(
+                                progress = { cloudSyncWorkState.progress / 100f },
+                                modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
+                                color = BhagwaOrange
+                            )
+                            Text(cloudSyncWorkState.status, fontSize = 11.sp, color = Color.Gray)
+                        }
+                    } else if (cloudSyncWorkState.status.isNotBlank()) {
+                        Text("Status: ${cloudSyncWorkState.status}", fontSize = 11.sp, color = EmeraldGreen, fontWeight = FontWeight.Medium)
+                    }
+
+                    Button(
+                        onClick = { viewModel.triggerGitHubSync() },
+                        enabled = !cloudSyncWorkState.isScanning,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = BhagwaOrange)
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Sync", modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            if (cloudSyncWorkState.isScanning) "Syncing via WorkManager..." else "Trigger Background Sync (WorkManager)",
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
+                }
+            }
         }
 
         // Google Drive Core Status Card
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("🍁", fontSize = 24.sp)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Column {
-                            Text("Google Drive Sync (Core)", fontWeight = FontWeight.Bold)
-                            Text("Official Google REST API integration", fontSize = 11.sp, color = Color.Gray)
-                        }
-                    }
-                    Button(
-                        onClick = { viewModel.connectToGoogleDrive() },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (isCloudConnected) Color.Red else EmeraldGreen
-                        )
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(if (isCloudConnected) "Disconnect" else "Authenticate")
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("🍁", fontSize = 24.sp)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text("Google Drive Sync (Core)", fontWeight = FontWeight.Bold)
+                                Text("Official Google REST API integration", fontSize = 11.sp, color = Color.Gray)
+                            }
+                        }
+                        Button(
+                            onClick = { viewModel.connectToGoogleDrive() },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isCloudConnected) Color.Red else EmeraldGreen
+                            )
+                        ) {
+                            Text(if (isCloudConnected) "Disconnect" else "Authenticate")
+                        }
                     }
                 }
             }
         }
 
         // Cloud Companions Plugins Toggles
-        Text("Active Cloud Companions (Plugins)", fontWeight = FontWeight.Bold, color = CosmicBlue)
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            listOf("onedrive" to "OneDrive", "dropbox" to "Dropbox", "nextcloud" to "NextCloud").forEach { (key, name) ->
-                val isEnabled = plugins[key] ?: false
-                FilterChip(
-                    selected = isEnabled,
-                    onClick = { viewModel.toggleCloudProvider(key, !isEnabled) },
-                    label = { Text(name) },
-                    modifier = Modifier.weight(1f)
-                )
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Active Cloud Companions (Plugins)", fontWeight = FontWeight.Bold, color = CosmicBlue)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    listOf("onedrive" to "OneDrive", "dropbox" to "Dropbox", "nextcloud" to "NextCloud").forEach { (key, name) ->
+                        val isEnabled = plugins[key] ?: false
+                        FilterChip(
+                            selected = isEnabled,
+                            onClick = { viewModel.toggleCloudProvider(key, !isEnabled) },
+                            label = { Text(name) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
             }
         }
 
         // Upload Queue
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("Offline Upload Queue (${cloudQueue.size} files)", fontWeight = FontWeight.Bold, color = CosmicBlue)
-            Button(
-                onClick = { viewModel.syncCloudQueue() },
-                colors = ButtonDefaults.buttonColors(containerColor = BhagwaOrange),
-                enabled = !cloudSyncing && isCloudConnected && cloudQueue.isNotEmpty()
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                if (cloudSyncing) {
-                    CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White)
-                } else {
-                    Text("Sync Now")
+                Text("Offline Upload Queue (${cloudQueue.size} files)", fontWeight = FontWeight.Bold, color = CosmicBlue)
+                Button(
+                    onClick = { viewModel.syncCloudQueue() },
+                    colors = ButtonDefaults.buttonColors(containerColor = BhagwaOrange),
+                    enabled = !cloudSyncing && isCloudConnected && cloudQueue.isNotEmpty()
+                ) {
+                    if (cloudSyncing) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White)
+                    } else {
+                        Text("Sync Now")
+                    }
                 }
             }
         }
 
         if (cloudQueue.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(80.dp)
-                    .background(Color.LightGray.copy(alpha = 0.15f), RoundedCornerShape(8.dp)),
-                contentAlignment = Alignment.Center
-            ) {
-                Text("All local changes synced. Storage up-to-date.", color = Color.Gray, fontSize = 13.sp)
+            item {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(80.dp)
+                        .background(Color.LightGray.copy(alpha = 0.15f), RoundedCornerShape(8.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("All local changes synced. Storage up-to-date.", color = Color.Gray, fontSize = 13.sp)
+                }
             }
         } else {
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(0.4f)
-            ) {
-                LazyColumn(modifier = Modifier.padding(12.dp)) {
-                    items(cloudQueue) { file ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(file.name, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                            Badge(containerColor = SoftGold) {
-                                Text("Awaiting Sync", modifier = Modifier.padding(2.dp))
-                            }
+                    items(cloudQueue, key = { it.id }) { file ->
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(file.name, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                        Badge(containerColor = SoftGold) {
+                            Text("Awaiting Sync", modifier = Modifier.padding(2.dp))
                         }
                     }
                 }
@@ -1430,24 +1599,29 @@ fun CloudScreen(viewModel: SmartManagerViewModel) {
         }
 
         // Cloud Console Sync Logs
-        Text("Cloud Connection Logs (Real-time Console)", fontWeight = FontWeight.Bold, color = BhagwaOrange)
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(0.6f),
-            colors = CardDefaults.cardColors(containerColor = Color.Black)
-        ) {
-            LazyColumn(
-                modifier = Modifier.padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+        item {
+            Text("Cloud Connection Logs (Real-time Console)", fontWeight = FontWeight.Bold, color = BhagwaOrange)
+        }
+
+        item {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(180.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.Black)
             ) {
-                items(cloudLogs) { log ->
-                    Text(
-                        text = log,
-                        color = Color.Green,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 11.sp
-                    )
+                LazyColumn(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    items(cloudLogs, key = { it.hashCode() + it.length }) { log ->
+                        Text(
+                            text = log,
+                            color = Color.Green,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp
+                        )
+                    }
                 }
             }
         }
@@ -1459,7 +1633,7 @@ fun CloudScreen(viewModel: SmartManagerViewModel) {
 // ========================================================
 @Composable
 fun PluginsScreen(viewModel: SmartManagerViewModel) {
-    val plugins by viewModel.plugins.collectAsState()
+    val plugins by viewModel.plugins.collectAsStateWithLifecycle()
 
     val pluginList = listOf(
         Triple("ocr", "ML Kit OCR Engine", "Extracts metadata and text dynamically from documents & scanned images on-demand to construct searchable files."),
@@ -1530,7 +1704,9 @@ fun PluginsScreen(viewModel: SmartManagerViewModel) {
 // 8. METADATA DETAIL DIALOG AND DISTRIBUTION COMPONENTS
 // ========================================================
 @Composable
-fun MediaDetailDialog(file: MediaFile, onDismiss: () -> Unit) {
+fun MediaDetailDialog(file: MediaFile, viewModel: SmartManagerViewModel, onDismiss: () -> Unit) {
+    val isAutoTagging by viewModel.isAutoTagging.collectAsStateWithLifecycle()
+
     AlertDialog(
         onDismissRequest = onDismiss,
         confirmButton = {
@@ -1575,10 +1751,24 @@ fun MediaDetailDialog(file: MediaFile, onDismiss: () -> Unit) {
                 DetailItem("Date Created", java.text.SimpleDateFormat("dd/MM/yyyy HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date(file.createdAt)))
                 DetailItem("Last Modified", java.text.SimpleDateFormat("dd/MM/yyyy HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date(file.modifiedAt)))
                 
-                if (file.tags.isNotBlank()) {
-                    DetailItem("AI Tags", file.tags)
+                DetailItem("Stored AI Tags", if (file.tags.isNotBlank()) file.tags else "No tags stored in Room DB")
+
+                Button(
+                    onClick = { viewModel.autoTagFile(file) },
+                    enabled = !isAutoTagging,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = BhagwaOrange)
+                ) {
+                    Icon(Icons.Default.AutoAwesome, contentDescription = "Auto Tag", tint = Color.White)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        if (isAutoTagging) "Tagging with Gemini..." else "✨ Generate Tags with Gemini AI",
+                        fontSize = 12.sp,
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
-                
+
                 if (file.ocrText.isNotBlank()) {
                     Text("ML Kit OCR Extracted Text:", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = CosmicBlue)
                     Card(
@@ -1604,19 +1794,285 @@ fun DetailItem(label: String, value: String) {
     }
 }
 
+// ========================================================
+// 9. DISK SPACE USAGE BREAKDOWN WIDGET & GEMINI AUTO-TAGGING HUB
+// ========================================================
+data class SpaceCategory(
+    val name: String,
+    val sizeBytes: Long,
+    val fileCount: Int,
+    val color: Color
+)
+
 @Composable
-fun DistributionRow(type: String, count: Int, size: Long, color: Color, totalCount: Int) {
-    val fraction = if (totalCount > 0) count.toFloat() / totalCount else 0f
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(type, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = CosmicBlue)
-            Text("$count files (${size / 1024} KB)", fontSize = 11.sp, color = Color.Gray)
-        }
-        LinearProgressIndicator(
-            progress = { fraction },
-            modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
-            color = color,
-            trackColor = Color.LightGray.copy(alpha = 0.3f)
+fun DiskSpaceUsageWidget(files: List<MediaFile>, vaultFiles: List<MediaFile>) {
+    val images = remember(files) { files.filter { it.type == "Image" } }
+    val videos = remember(files) { files.filter { it.type == "Video" } }
+    val docs = remember(files) { files.filter { it.type == "Document" } }
+    val audio = remember(files) { files.filter { it.type == "Audio" } }
+    
+    val imagesSize = remember(images) { images.sumOf { it.size } }
+    val videosSize = remember(videos) { videos.sumOf { it.size } }
+    val docsSize = remember(docs) { docs.sumOf { it.size } }
+    val audioSize = remember(audio) { audio.sumOf { it.size } }
+    val vaultSize = remember(vaultFiles) { vaultFiles.sumOf { it.size } }
+    
+    val totalSizeBytes = remember(imagesSize, videosSize, docsSize, audioSize, vaultSize) { 
+        imagesSize + videosSize + docsSize + audioSize + vaultSize 
+    }
+    val totalSizeMb = remember(totalSizeBytes) { if (totalSizeBytes > 0) totalSizeBytes / (1024f * 1024f) else 0f }
+    val totalSizeKb = remember(totalSizeBytes) { totalSizeBytes / 1024 }
+    
+    val categories = remember(imagesSize, videosSize, docsSize, audioSize, vaultSize, images.size, videos.size, docs.size, audio.size, vaultFiles.size) {
+        listOf(
+            SpaceCategory("Images", imagesSize, images.size, BhagwaOrange),
+            SpaceCategory("Videos", videosSize, videos.size, CosmicBlue),
+            SpaceCategory("Documents", docsSize, docs.size, EmeraldGreen),
+            SpaceCategory("Audio", audioSize, audio.size, SkyCyan),
+            SpaceCategory("Vault", vaultSize, vaultFiles.size, SoftGold)
         )
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        "Disk Space Breakdown",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = CosmicBlue
+                    )
+                    Text(
+                        "Storage usage by media type stored in database",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.Gray
+                    )
+                }
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = CosmicBlue.copy(alpha = 0.1f)
+                ) {
+                    Text(
+                        text = if (totalSizeMb >= 1.0f) String.format("%.2f MB Total", totalSizeMb) else "$totalSizeKb KB Total",
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = CosmicBlue
+                    )
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                // Donut Chart Canvas
+                Box(
+                    modifier = Modifier.size(130.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Canvas(modifier = Modifier.size(130.dp)) {
+                        var startAngle = -90f
+                        if (totalSizeBytes == 0L) {
+                            drawArc(
+                                color = Color.LightGray.copy(alpha = 0.3f),
+                                startAngle = 0f,
+                                sweepAngle = 360f,
+                                useCenter = false,
+                                style = Stroke(width = 22.dp.toPx())
+                            )
+                        } else {
+                            categories.forEach { cat ->
+                                val sweep = (cat.sizeBytes.toFloat() / totalSizeBytes.toFloat()) * 360f
+                                if (sweep > 0) {
+                                    drawArc(
+                                        color = cat.color,
+                                        startAngle = startAngle,
+                                        sweepAngle = sweep,
+                                        useCenter = false,
+                                        style = Stroke(width = 22.dp.toPx())
+                                    )
+                                    startAngle += sweep
+                                }
+                            }
+                        }
+                    }
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = if (totalSizeMb >= 1.0f) String.format("%.1f", totalSizeMb) else "$totalSizeKb",
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 16.sp,
+                            color = CosmicBlue
+                        )
+                        Text(
+                            text = if (totalSizeMb >= 1.0f) "MB" else "KB",
+                            fontSize = 10.sp,
+                            color = Color.Gray,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.width(16.dp))
+
+                // Legend List
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    categories.forEach { cat ->
+                        val percent = if (totalSizeBytes > 0) (cat.sizeBytes.toFloat() / totalSizeBytes.toFloat() * 100) else 0f
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(10.dp)
+                                        .clip(RoundedCornerShape(3.dp))
+                                        .background(cat.color)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    cat.name,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                            Text(
+                                String.format("%.1f%% (%d)", percent, cat.fileCount),
+                                fontSize = 11.sp,
+                                color = Color.Gray,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Multi-segment horizontal bar indicator
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(8.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(Color.LightGray.copy(alpha = 0.2f))
+            ) {
+                if (totalSizeBytes > 0) {
+                    categories.forEach { cat ->
+                        val weight = cat.sizeBytes.toFloat() / totalSizeBytes.toFloat()
+                        if (weight > 0) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxHeight()
+                                    .weight(weight)
+                                    .background(cat.color)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun GeminiAutoTaggingCard(viewModel: SmartManagerViewModel) {
+    val isAutoTagging by viewModel.isAutoTagging.collectAsStateWithLifecycle()
+    val autoTagStatus by viewModel.autoTagStatus.collectAsStateWithLifecycle()
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text("✨", fontSize = 22.sp)
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Gemini AI Auto-Tagging Engine",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = CosmicBlue
+                    )
+                    Text(
+                        "Analyze media file metadata & auto-store tags in Room DB",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.Gray
+                    )
+                }
+            }
+
+            if (autoTagStatus.isNotBlank()) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(BhagwaOrange.copy(alpha = 0.1f))
+                        .padding(10.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (isAutoTagging) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                                color = BhagwaOrange
+                            )
+                        }
+                        Text(
+                            autoTagStatus,
+                            fontSize = 12.sp,
+                            color = CosmicBlue,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Button(
+                onClick = { viewModel.autoTagAllFiles() },
+                enabled = !isAutoTagging,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = BhagwaOrange)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.AutoAwesome,
+                    contentDescription = "Auto Tag All",
+                    tint = Color.White
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    if (isAutoTagging) "Tagging Files with Gemini AI..." else "Batch Auto-Tag All Files (Gemini AI)",
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+            }
+        }
     }
 }
