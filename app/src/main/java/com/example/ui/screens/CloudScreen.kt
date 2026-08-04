@@ -15,7 +15,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -32,11 +31,6 @@ fun CloudScreen(viewModel: SmartManagerViewModel) {
     val plugins by viewModel.plugins.collectAsStateWithLifecycle()
     val cloudSyncWorkState by viewModel.cloudSyncWorkState.collectAsStateWithLifecycle()
 
-    var gitHubOwner by remember { mutableStateOf(viewModel.gitHubSyncProvider.repoOwner) }
-    var gitHubRepo by remember { mutableStateOf(viewModel.gitHubSyncProvider.repoName) }
-    var gitHubToken by remember { mutableStateOf(viewModel.gitHubSyncProvider.personalAccessToken) }
-    var showTokenConfig by remember { mutableStateOf(false) }
-
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -45,12 +39,12 @@ fun CloudScreen(viewModel: SmartManagerViewModel) {
     ) {
         item {
             Column {
-                Text("Cloud & Repository Sync Manager", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = CosmicBlue)
+                Text("Cloud Sync Manager", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = CosmicBlue)
                 Text("Phase 11 & 12: WorkManager Background Sync & Cloud Plugins", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
             }
         }
 
-        // GitHub Linked Repository Sync Card
+        // Background Sync Status
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -64,40 +58,12 @@ fun CloudScreen(viewModel: SmartManagerViewModel) {
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("🐙", fontSize = 24.sp)
+                            Text("☁️", fontSize = 24.sp)
                             Column {
-                                Text("GitHub Repo Metadata Sync", fontWeight = FontWeight.Bold, color = CosmicBlue)
-                                Text("WorkManager background push: $gitHubOwner/$gitHubRepo", fontSize = 11.sp, color = Color.Gray)
+                                Text("Drive Sync", fontWeight = FontWeight.Bold, color = CosmicBlue)
+                                Text("WorkManager background sync", fontSize = 11.sp, color = Color.Gray)
                             }
                         }
-                        IconButton(onClick = { showTokenConfig = !showTokenConfig }) {
-                            Icon(Icons.Default.Settings, contentDescription = "Config Repo", tint = CosmicBlue)
-                        }
-                    }
-
-                    if (showTokenConfig) {
-                        OutlinedTextField(
-                            value = gitHubOwner,
-                            onValueChange = { gitHubOwner = it; viewModel.gitHubSyncProvider.repoOwner = it },
-                            label = { Text("Repository Owner/Org") },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true
-                        )
-                        OutlinedTextField(
-                            value = gitHubRepo,
-                            onValueChange = { gitHubRepo = it; viewModel.gitHubSyncProvider.repoName = it },
-                            label = { Text("Repository Name") },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true
-                        )
-                        OutlinedTextField(
-                            value = gitHubToken,
-                            onValueChange = { gitHubToken = it; viewModel.gitHubSyncProvider.personalAccessToken = it },
-                            label = { Text("GitHub Personal Access Token (Optional)") },
-                            visualTransformation = PasswordVisualTransformation(),
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true
-                        )
                     }
 
                     if (cloudSyncWorkState.isScanning) {
@@ -118,7 +84,7 @@ fun CloudScreen(viewModel: SmartManagerViewModel) {
                     }
 
                     Button(
-                        onClick = { viewModel.triggerGitHubSync() },
+                        onClick = { viewModel.triggerGitHubSync() }, // Reusing the same function name for background sync
                         enabled = !cloudSyncWorkState.isScanning,
                         modifier = Modifier.fillMaxWidth(),
                         colors = ButtonDefaults.buttonColors(containerColor = BhagwaOrange)
@@ -244,7 +210,6 @@ fun CloudScreen(viewModel: SmartManagerViewModel) {
         item {
             Text("Cloud Connection Logs (Real-time Console)", fontWeight = FontWeight.Bold, color = BhagwaOrange)
         }
-
         item {
             Card(
                 modifier = Modifier

@@ -1,3 +1,5 @@
+#!/bin/bash
+cat << 'INNER_EOF' > app/src/main/java/com/example/feature/vault/VaultSessionManager.kt
 package com.example.feature.vault
 
 import android.content.Context
@@ -141,3 +143,4 @@ class VaultSessionManager(context: Context) {
         _isVaultUnlocked.value = false
     }
 }
+INNER_EOF

@@ -1,3 +1,5 @@
+#!/bin/bash
+cat << 'INNER_EOF' > app/src/main/java/com/example/MainActivity.kt
 package com.example
 
 import android.os.Bundle
@@ -32,7 +34,6 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.example.feature.SmartManagerViewModel
 import com.example.ui.screens.*
-import com.example.ui.components.*
 import com.example.ui.theme.*
 import kotlinx.coroutines.delay
 import org.koin.androidx.viewmodel.ext.android.viewModel
@@ -282,3 +283,4 @@ fun MainAppContent(viewModel: SmartManagerViewModel = koinViewModel()) {
         }
     }
 }
+INNER_EOF

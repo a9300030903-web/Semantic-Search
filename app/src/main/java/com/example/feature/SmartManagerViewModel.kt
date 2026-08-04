@@ -10,7 +10,6 @@ import com.example.feature.filemanager.CoreFileManager
 import com.example.feature.search.CoreSearchEngine
 import com.example.feature.vault.VaultSessionManager
 import com.example.feature.vault.BiometricAuthManager
-import com.example.plugin.cloud.GitHubSyncProvider
 import com.example.plugin.cloud.GoogleDriveProvider
 import com.example.plugin.ocr.OcrEngine
 import com.example.plugin.ocr.MlKitOcrEngine
@@ -41,13 +40,13 @@ import kotlinx.coroutines.flow.update
 import java.io.File
 
 class SmartManagerViewModel(
+    private val applicationContext: android.content.Context,
     private val mediaFileRepository: MediaFileRepository,
     private val semanticSearchEngine: SemanticSearchEngine,
     private val coreSearchEngine: CoreSearchEngine,
     private val autoTagger: AutoTagger,
     private val deepDuplicateCleaner: DeepDuplicateCleaner,
     private val driveProvider: GoogleDriveProvider,
-    val gitHubSyncProvider: GitHubSyncProvider,
     private val backgroundManager: BackgroundManager,
     private val vaultSessionManager: VaultSessionManager,
     private val vaultEncryptionManager: VaultEncryptionManager,
@@ -154,12 +153,6 @@ class SmartManagerViewModel(
         initialValue = MediaScanState()
     )
 
-    fun triggerGitHubSync() {
-        backgroundManager.triggerImmediateCloudSync()
-    }
-
-    private val _selectedDetailFile = MutableStateFlow<MediaFile?>(null)
-    val selectedDetailFile: StateFlow<MediaFile?> = _selectedDetailFile.asStateFlow()
 
     fun selectDetailFile(file: MediaFile?) {
         _selectedDetailFile.value = file
@@ -195,6 +188,8 @@ class SmartManagerViewModel(
     // ----------------------------------------------------
     // UI State variables
     // ----------------------------------------------------
+    private val _selectedDetailFile = MutableStateFlow<MediaFile?>(null)
+    val selectedDetailFile: StateFlow<MediaFile?> = _selectedDetailFile.asStateFlow()
     private val _currentTab = MutableStateFlow(0) // 0=Dashboard, 1=Files, 2=Vault, 3=AI Search/OCR, 4=AI Duplicates, 5=Cloud, 6=Plugins
     val currentTab: StateFlow<Int> = _currentTab.asStateFlow()
 
@@ -246,16 +241,22 @@ class SmartManagerViewModel(
     private val _isOcrLoading = MutableStateFlow(false)
     val isOcrLoading: StateFlow<Boolean> = _isOcrLoading.asStateFlow()
 
-    // Similarity Slider State (0.7f to 0.95f)
+    // Similarity Slider State (0.70f to 0.95f)
     private val _similarityThreshold = MutableStateFlow(0.85f)
     val similarityThreshold: StateFlow<Float> = _similarityThreshold.asStateFlow()
 
     private val _semanticDuplicates = MutableStateFlow<List<Pair<MediaFile, MediaFile>>>(emptyList())
     val semanticDuplicates: StateFlow<List<Pair<MediaFile, MediaFile>>> = _semanticDuplicates.asStateFlow()
 
+    private val _visualDuplicates = MutableStateFlow<Map<String, List<MediaFile>>>(emptyMap())
+    val visualDuplicates: StateFlow<Map<String, List<MediaFile>>> = _visualDuplicates.asStateFlow()
+
     // Vault State
     private val _isVaultLocked = MutableStateFlow(true)
     val isVaultLocked: StateFlow<Boolean> = _isVaultLocked.asStateFlow()
+    val lockoutRemainingSeconds: StateFlow<Long> = vaultSessionManager.lockoutRemainingSeconds
+    private val _vaultTimeoutMinutes = MutableStateFlow(2)
+    val vaultTimeoutMinutes: StateFlow<Int> = _vaultTimeoutMinutes.asStateFlow()
 
     private val _vaultPinInput = MutableStateFlow("")
     val vaultPinInput: StateFlow<String> = _vaultPinInput.asStateFlow()
@@ -290,11 +291,12 @@ class SmartManagerViewModel(
             }
         }
 
-        // Debounced Semantic Duplicate Calculation
+        // Debounced Semantic & Visual Duplicate Calculation
         viewModelScope.launch {
             @OptIn(FlowPreview::class)
             files.debounce(500L).collect {
                 updateSemanticDuplicates()
+                updateVisualDuplicates()
             }
         }
 
@@ -396,13 +398,52 @@ class SmartManagerViewModel(
 
     fun toggleFileEncryption(file: MediaFile) {
         viewModelScope.launch {
-            val updated = file.copy(
-                isEncrypted = !file.isEncrypted,
-                modifiedAt = System.currentTimeMillis()
-            )
-            mediaFileRepository.updateFile(updated)
-            val action = if (updated.isEncrypted) "encrypted & moved to Vault" else "decrypted & moved to Storage"
-            addCloudLog("File ${file.name} $action.")
+            try {
+                val originalFile = java.io.File(file.path)
+                
+                if (!file.isEncrypted) {
+                    val vaultDir = java.io.File(applicationContext.filesDir, "vault")
+                    if (!vaultDir.exists()) vaultDir.mkdirs()
+                    
+                    val encryptedFile = java.io.File(vaultDir, "enc_${file.id}_${originalFile.name}")
+                    
+                    vaultEncryptionManager.encryptFile(originalFile, encryptedFile, file.id.toString())
+                    
+                    if (originalFile.exists()) {
+                        originalFile.delete() // Simple delete, shredding could be implemented later
+                    }
+                    
+                    val updated = file.copy(
+                        isEncrypted = true,
+                        path = encryptedFile.absolutePath,
+                        modifiedAt = System.currentTimeMillis()
+                    )
+                    mediaFileRepository.updateFile(updated)
+                    addCloudLog("File ${file.name} encrypted & moved to Vault.")
+                } else {
+                    val decryptedDir = java.io.File(applicationContext.getExternalFilesDir(null) ?: applicationContext.filesDir, "VVFManager")
+                    if (!decryptedDir.exists()) decryptedDir.mkdirs()
+                    
+                    val decryptedFile = java.io.File(decryptedDir, "dec_${file.id}_${originalFile.name.removePrefix("enc_${file.id}_")}")
+                    
+                    vaultEncryptionManager.decryptFile(originalFile, decryptedFile, file.id.toString())
+                    
+                    if (originalFile.exists()) {
+                        originalFile.delete()
+                    }
+                    
+                    val updated = file.copy(
+                        isEncrypted = false,
+                        path = decryptedFile.absolutePath,
+                        modifiedAt = System.currentTimeMillis()
+                    )
+                    mediaFileRepository.updateFile(updated)
+                    addCloudLog("File ${file.name} decrypted & moved to Storage.")
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                addCloudLog("Encryption/Decryption failed for ${file.name}: ${e.message}")
+            }
         }
     }
 
@@ -422,146 +463,129 @@ class SmartManagerViewModel(
 
     fun runOcrOnSelectedFile() {
         val file = _selectedOcrFile.value ?: return
-        if (_plugins.value["ocr"] != true) {
-            _extractedOcrText.value = "OCR Plugin is disabled! Enable it in the Plugins tab."
-            return
-        }
-
         _isOcrLoading.value = true
         viewModelScope.launch {
             try {
-                kotlinx.coroutines.delay(1200) // Simulated processing latency
-                
-                // Fallback mock extraction text if file's text is empty
-                val text = if (file.ocrText.isNotBlank()) {
-                    file.ocrText
-                } else {
-                    "VVF SMART MANAGER OCR RESULT\nDOCUMENT TYPE: ${file.type}\nPROCESSED FILE: ${file.name}\nMETADATA VERIFIED."
+                val ioFile = java.io.File(file.path)
+                if (ioFile.exists() && ioFile.canRead()) {
+                    val result = ocrEngine.extractTextFromImage(android.net.Uri.fromFile(ioFile))
+                    if (result.isSuccess) {
+                        val text = result.getOrNull() ?: ""
+                        _extractedOcrText.value = text
+                        
+                        try {
+                            val tags = geminiService.generateAutoTags(file.name, file.type, file.mimeType, text)
+                            if (tags.isNotBlank()) {
+                                _suggestedTags.value = tags
+                                _suggestedCategory.value = "AI Tagged"
+                                
+                                val updated = file.copy(
+                                    ocrText = text,
+                                    tags = if (file.tags.isEmpty()) tags else "${file.tags}, $tags"
+                                )
+                                mediaFileRepository.updateFile(updated)
+                            }
+                        } catch (e: Exception) {}
+                    } else {
+                        _extractedOcrText.value = "OCR Failed: ${result.exceptionOrNull()?.message}"
+                    }
                 }
-                
-                _extractedOcrText.value = text
-                val tags = autoTagger.generateTags(text).ifBlank { "scanned, document, system" }
-                _suggestedTags.value = tags
-                _suggestedCategory.value = autoTagger.suggestCategory(file.name, text)
-
-                // Update database file with OCR text & tags to make it searchable
-                val updated = file.copy(
-                    ocrText = text,
-                    tags = if (file.tags.isBlank()) tags else "${file.tags}, $tags",
-                    modifiedAt = System.currentTimeMillis()
-                )
-                mediaFileRepository.updateFile(updated)
-                addCloudLog("OCR analysis completed for ${file.name}.")
-            } catch (e: Exception) {
-                _extractedOcrText.value = "OCR analysis failed: ${e.localizedMessage ?: e.message}"
+            } catch(e: Exception) {
             } finally {
                 _isOcrLoading.value = false
             }
         }
     }
 
-    // ----------------------------------------------------
-    // AI Intelligence Operations
-    // ----------------------------------------------------
-    fun updateSimilarityThreshold(threshold: Float) {
-        _similarityThreshold.value = threshold
+    private fun updateSemanticDuplicates() {
         viewModelScope.launch {
-            updateSemanticDuplicates()
+            val allFiles = mediaFileRepository.getAllFiles().first()
+            val dups = deepDuplicateCleaner.findSemanticDuplicates(allFiles, _similarityThreshold.value)
+            _semanticDuplicates.value = dups
         }
     }
 
-    private suspend fun updateSemanticDuplicates() {
-        val items = files.value
-        if (items.size < 2) {
-            _semanticDuplicates.value = emptyList()
-            return
+    private fun updateVisualDuplicates() {
+        viewModelScope.launch {
+            val allFiles = mediaFileRepository.getAllFiles().first()
+            val dups = deepDuplicateCleaner.findVisualDuplicates(allFiles)
+            _visualDuplicates.value = dups
         }
-        val threshold = _similarityThreshold.value
-        val duplicates = withContext(Dispatchers.Default) {
-            deepDuplicateCleaner.findSemanticDuplicates(items, threshold)
-        }
-        _semanticDuplicates.value = duplicates
+    }
+
+    // ----------------------------------------------------
+    // AI Duplicates Operations
+    // ----------------------------------------------------
+    fun updateSimilarityThreshold(threshold: Float) {
+        _similarityThreshold.value = threshold
     }
 
     // ----------------------------------------------------
     // Cloud Operations
     // ----------------------------------------------------
-    fun toggleCloudProvider(provider: String, enabled: Boolean) {
-        val updated = _plugins.value.toMutableMap()
-        updated[provider] = enabled
-        _plugins.value = updated
-        addCloudLog("Cloud provider $provider toggled ${if (enabled) "ON" else "OFF"}")
-    }
-
-    fun togglePlugin(pluginKey: String) {
-        val updated = _plugins.value.toMutableMap()
-        val current = updated[pluginKey] ?: false
-        updated[pluginKey] = !current
-        _plugins.value = updated
-        addCloudLog("Plugin '$pluginKey' toggled to ${!current}")
-        
-        // Refresh searches if semantic was toggled
-        updateSearchQuery(_searchQuery.value)
+    fun addCloudLog(log: String) {
+        _cloudLogs.value = listOf(log) + _cloudLogs.value.take(49)
     }
 
     fun connectToGoogleDrive() {
         viewModelScope.launch {
-            _isCloudConnected.value = !_isCloudConnected.value
-            if (_isCloudConnected.value) {
-                addCloudLog("Successfully authenticated Google Drive account.")
-                syncCloudQueue()
+            if (!_isCloudConnected.value) {
+                addCloudLog("Connecting to Google Drive...")
+                driveProvider.authenticate()
+                if (driveProvider.isAuthenticated()) {
+                    _isCloudConnected.value = true
+                    addCloudLog("Connected to Google Drive successfully.")
+                } else {
+                    addCloudLog("Failed to connect to Google Drive.")
+                }
             } else {
-                addCloudLog("Disconnected Google Drive account.")
+                _isCloudConnected.value = false
+                addCloudLog("Disconnected from Google Drive.")
             }
         }
+    }
+
+    fun toggleCloudProvider(provider: String, isEnabled: Boolean) {
+        val current = _plugins.value.toMutableMap()
+        current[provider] = isEnabled
+        _plugins.value = current
     }
 
     fun addToCloudQueue(file: MediaFile) {
-        _cloudQueue.update { current ->
-            if (!current.contains(file)) {
-                current + file
-            } else {
-                current
-            }
+        val current = _cloudQueue.value.toMutableList()
+        if (current.none { it.id == file.id }) {
+            current.add(file)
+            _cloudQueue.value = current
+            addCloudLog("Added ${file.name} to upload queue.")
         }
-        addCloudLog("Added ${file.name} to Cloud upload queue.")
     }
 
     fun syncCloudQueue() {
-        if (!_isCloudConnected.value) {
-            addCloudLog("Cannot sync: Google Drive is disconnected.")
-            return
-        }
-        if (_cloudQueue.value.isEmpty()) {
-            addCloudLog("Sync complete: Cloud up-to-date.")
-            return
-        }
-        if (_cloudSyncing.value) return // Prevent concurrent sync loops
-
-        _cloudSyncing.value = true
         viewModelScope.launch {
-            try {
-                val queue = _cloudQueue.value.toList()
-                for (file in queue) {
-                    addCloudLog("Uploading ${file.name} ...")
-                    kotlinx.coroutines.delay(1000) // upload delay simulation
-                    addCloudLog("Uploaded ${file.name} successfully.")
-                    
-                    _cloudQueue.update { current -> current.filter { it.id != file.id } }
-                }
-                addCloudLog("All pending files synced to Google Drive.")
-            } catch (e: Exception) {
-                addCloudLog("Cloud sync error: ${e.localizedMessage ?: e.message}")
-            } finally {
-                _cloudSyncing.value = false
+            if (_cloudQueue.value.isEmpty() || !_isCloudConnected.value) return@launch
+            _cloudSyncing.value = true
+            addCloudLog("Starting sync for ${_cloudQueue.value.size} files...")
+            
+            val result = driveProvider.syncChanges()
+            if (result.isSuccess) {
+                _cloudQueue.value = emptyList()
+                addCloudLog("Sync completed successfully.")
+            } else {
+                addCloudLog("Sync failed: ${result.exceptionOrNull()?.message}")
             }
+            _cloudSyncing.value = false
         }
     }
 
-    private fun addCloudLog(log: String) {
-        _cloudLogs.update { current ->
-            val newLog = "[${java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())}] $log"
-            (listOf(newLog) + current).take(50)
+    fun togglePlugin(pluginId: String, isEnabled: Boolean) {
+        val current = _plugins.value.toMutableMap()
+        current[pluginId] = isEnabled
+        _plugins.value = current
+    }
+    fun triggerGitHubSync() {
+        viewModelScope.launch {
+            addCloudLog("Triggering WorkManager Drive Sync...")
+            backgroundManager.triggerImmediateCloudSync()
         }
     }
 }

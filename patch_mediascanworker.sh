@@ -1,3 +1,5 @@
+#!/bin/bash
+cat << 'INNER_EOF' > app/src/main/java/com/example/feature/background/MediaScanWorker.kt
 package com.example.feature.background
 
 import android.content.Context
@@ -93,3 +95,4 @@ class MediaScanWorker(
         return Result.success()
     }
 }
+INNER_EOF

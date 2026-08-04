@@ -68,7 +68,7 @@ fun PluginsScreen(viewModel: SmartManagerViewModel) {
                             }
                             Switch(
                                 checked = isEnabled,
-                                onCheckedChange = { viewModel.togglePlugin(key) },
+                                onCheckedChange = { viewModel.togglePlugin(key, it) },
                                 colors = SwitchDefaults.colors(
                                     checkedThumbColor = BhagwaOrange,
                                     checkedTrackColor = CosmicBlue

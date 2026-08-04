@@ -1,6 +1,10 @@
+#!/bin/bash
+cat << 'INNER_EOF' > app/src/main/java/com/example/plugin/cloud/GitHubSyncProvider.kt
 package com.example.plugin.cloud
 
 import android.content.Context
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
 import com.example.core.model.MediaFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -39,7 +43,7 @@ data class GitHubFileMetadata(
  * Phase 11 & 12: GitHub Repository Metadata Sync Provider
  * Syncs media database manifest and metadata to a linked GitHub repository.
  */
-class GitHubSyncProvider(private val client: OkHttpClient) : CloudProvider {
+class GitHubSyncProvider(private val context: Context, private val client: OkHttpClient) : CloudProvider {
 
     override val providerId: String = "github_sync"
     override val providerName: String = "GitHub Repository Sync"
@@ -53,7 +57,24 @@ class GitHubSyncProvider(private val client: OkHttpClient) : CloudProvider {
     var repoOwner: String = "vvf-smart-manager"
     var repoName: String = "media-vault-metadata"
     var targetBranch: String = "main"
-    var personalAccessToken: String = ""
+
+    private val masterKey = MasterKey.Builder(context)
+        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+        .build()
+
+    private val sharedPreferences = EncryptedSharedPreferences.create(
+        context,
+        "github_sync_prefs",
+        masterKey,
+        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+    )
+
+    var personalAccessToken: String
+        get() = sharedPreferences.getString("github_pat", "") ?: ""
+        set(value) {
+            sharedPreferences.edit().putString("github_pat", value).apply()
+        }
 
     override fun isAuthenticated(): Boolean {
         return personalAccessToken.isNotBlank() || repoName.isNotBlank()
@@ -91,7 +112,6 @@ class GitHubSyncProvider(private val client: OkHttpClient) : CloudProvider {
     suspend fun syncMetadataManifest(mediaFiles: List<MediaFile>): Result<String> = withContext(Dispatchers.IO) {
         try {
             _syncProgress.value = 0.2f
-
             val metadataList = mediaFiles.map { file ->
                 GitHubFileMetadata(
                     name = file.name,
@@ -111,13 +131,11 @@ class GitHubSyncProvider(private val client: OkHttpClient) : CloudProvider {
                 totalSizeBytes = mediaFiles.sumOf { it.size },
                 files = metadataList
             )
-
             _syncProgress.value = 0.5f
 
             val jsonContent = jsonFormatter.encodeToString(payload)
             val path = "manifests/media_metadata_manifest.json"
             val commitMsg = "Sync media metadata (${mediaFiles.size} files) via WorkManager"
-
             val result = pushFileToGitHub(path, jsonContent, commitMsg)
             _syncProgress.value = 1.0f
             result
@@ -129,7 +147,8 @@ class GitHubSyncProvider(private val client: OkHttpClient) : CloudProvider {
 
     private fun pushFileToGitHub(filePath: String, content: String, commitMessage: String): Result<String> {
         return try {
-            if (personalAccessToken.isBlank()) {
+            val token = personalAccessToken
+            if (token.isBlank()) {
                 // Return success simulation log if no token provided yet
                 return Result.success("Simulated sync to $repoOwner/$repoName:$filePath (Token required for live push)")
             }
@@ -147,7 +166,7 @@ class GitHubSyncProvider(private val client: OkHttpClient) : CloudProvider {
 
             val request = Request.Builder()
                 .url(url)
-                .header("Authorization", "Bearer $personalAccessToken")
+                .header("Authorization", "Bearer $token")
                 .header("Accept", "application/vnd.github.v3+json")
                 .put(bodyJson.toRequestBody("application/json".toMediaType()))
                 .build()
@@ -164,3 +183,4 @@ class GitHubSyncProvider(private val client: OkHttpClient) : CloudProvider {
         }
     }
 }
+INNER_EOF

@@ -13,7 +13,7 @@ class DeepDuplicateCleaner(private val semanticSearchEngine: SemanticSearchEngin
     /**
      * Level 3: Visual Similarity (Placeholder for pHash/dHash algorithms)
      */
-    fun findVisualDuplicates(files: List<MediaFile>, similarityThreshold: Float = 0.90f): Map<String, List<MediaFile>> {
+    fun findVisualDuplicates(files: List<MediaFile>, similarityThreshold: Float = 0.85f): Map<String, List<MediaFile>> {
         return emptyMap()
     }
 

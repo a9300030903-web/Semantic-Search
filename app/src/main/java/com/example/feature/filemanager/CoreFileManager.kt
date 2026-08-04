@@ -1,5 +1,6 @@
 package com.example.feature.filemanager
 
+import com.example.core.model.MediaFile
 import com.example.core.util.HashUtil
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
@@ -160,6 +161,40 @@ class CoreFileManager {
                 coroutineContext.ensureActive()
                 val hash = HashUtil.generateFileHash(file) ?: continue
                 duplicates.getOrPut(hash) { mutableListOf() }.add(file)
+            }
+        }
+
+        return@withContext duplicates.filterValues { it.size > 1 }
+    }
+
+    /**
+     * Duplicate Detection Level 1 (exact file size match) and Level 2 (SHA-256 hash match)
+     * Grouping by size first, then hashing only same-size groups.
+     */
+    suspend fun findExactDuplicates(files: List<MediaFile>): Map<String, List<MediaFile>> = withContext(Dispatchers.IO) {
+        val duplicates = mutableMapOf<String, MutableList<MediaFile>>()
+
+        // Pass 1: Group by file size (Level 1)
+        val sizeGrouped = mutableMapOf<Long, MutableList<MediaFile>>()
+        for (file in files) {
+            coroutineContext.ensureActive()
+            if (file.size == 0L) continue
+            sizeGrouped.getOrPut(file.size) { mutableListOf() }.add(file)
+        }
+
+        // Filter out unique file sizes
+        val candidateGroups = sizeGrouped.filterValues { it.size > 1 }
+
+        // Pass 2: SHA-256 Hash on candidate groups only (Level 2)
+        for ((_, candidateFiles) in candidateGroups) {
+            coroutineContext.ensureActive()
+            for (mediaFile in candidateFiles) {
+                coroutineContext.ensureActive()
+                val ioFile = File(mediaFile.path)
+                if (!ioFile.exists() || !ioFile.isFile || !ioFile.canRead()) continue
+                
+                val hash = HashUtil.generateFileHash(ioFile) ?: continue
+                duplicates.getOrPut(hash) { mutableListOf() }.add(mediaFile)
             }
         }
 

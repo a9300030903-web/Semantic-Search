@@ -13,6 +13,8 @@ class AutoTagger(private val semanticSearchEngine: SemanticSearchEngine) {
         "Invoices", "Receipts", "Personal Identity", "Family Photos", "Screenshots", "Memes", "Work Documents", "Media"
     )
 
+    var isCloudTaggingEnabled: Boolean = false
+
     /**
      * Suggests a category based on the extracted text and filename.
      */
@@ -34,7 +36,9 @@ class AutoTagger(private val semanticSearchEngine: SemanticSearchEngine) {
     }
 
     /**
-     * Uses Gemini AI API to generate descriptive tags for a media file.
+     * Optional cloud-enhanced tagging. Requires internet + user-provided API key. The
+     * app must remain fully functional for tagging via generateTags()/suggestCategory()
+     * without this.
      */
     suspend fun generateTagsWithGemini(file: MediaFile, geminiService: GeminiService): String {
         return geminiService.generateAutoTags(

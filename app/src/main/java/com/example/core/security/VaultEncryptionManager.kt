@@ -12,9 +12,10 @@ import javax.crypto.spec.GCMParameterSpec
 class VaultEncryptionManager {
     private val masterKey: SecretKey = KeystoreManager.getOrGenerateMasterKey()
 
-    suspend fun encryptFile(inputFile: File, outputFile: File) = withContext(Dispatchers.IO) {
+    suspend fun encryptFile(inputFile: File, outputFile: File, fileId: String) = withContext(Dispatchers.IO) {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, masterKey)
+        cipher.updateAAD(fileId.toByteArray(Charsets.UTF_8))
         val iv = cipher.iv
 
         FileInputStream(inputFile).use { fis ->
@@ -32,7 +33,7 @@ class VaultEncryptionManager {
         }
     }
 
-    suspend fun decryptFile(inputFile: File, outputFile: File) = withContext(Dispatchers.IO) {
+    suspend fun decryptFile(inputFile: File, outputFile: File, fileId: String) = withContext(Dispatchers.IO) {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         FileInputStream(inputFile).use { fis ->
             val iv = ByteArray(12) // GCM standard IV length
@@ -48,6 +49,7 @@ class VaultEncryptionManager {
 
             val spec = GCMParameterSpec(128, iv)
             cipher.init(Cipher.DECRYPT_MODE, masterKey, spec)
+            cipher.updateAAD(fileId.toByteArray(Charsets.UTF_8))
 
             FileOutputStream(outputFile).use { fos ->
                 val buffer = ByteArray(8192)

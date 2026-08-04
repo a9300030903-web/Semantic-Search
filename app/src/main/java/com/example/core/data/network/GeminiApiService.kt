@@ -59,6 +59,11 @@ interface GeminiApiService {
     ): GenerateContentResponse
 }
 
+/**
+ * Optional cloud-enhanced tagging. Requires internet + user-provided API key. The
+ * app must remain fully functional for tagging via generateTags()/suggestCategory()
+ * without this.
+ */
 class GeminiService(private val apiService: GeminiApiService) {
     suspend fun analyzeMedia(query: String): String = withContext(Dispatchers.IO) {
         val apiKey = BuildConfig.GEMINI_API_KEY

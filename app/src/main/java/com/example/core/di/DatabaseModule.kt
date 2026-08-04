@@ -14,7 +14,6 @@ import com.example.feature.background.BackgroundManager
 import com.example.feature.background.CloudSyncWorker
 import com.example.feature.background.MediaScanWorker
 import com.example.feature.search.CoreSearchEngine
-import com.example.plugin.cloud.GitHubSyncProvider
 import com.example.plugin.cloud.GoogleDriveProvider
 import com.example.plugin.semanticsearch.AutoTagger
 import com.example.plugin.semanticsearch.DeepDuplicateCleaner
@@ -99,13 +98,34 @@ val databaseModule = module {
                 }
             }
 
+            val MIGRATION_2_3 = object : androidx.room.migration.Migration(2, 3) {
+                override fun migrate(db: SupportSQLiteDatabase) {
+                    db.execSQL("""
+                        CREATE TABLE IF NOT EXISTS `cloud_sync_tasks` (
+                            `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                            `fileId` INTEGER NOT NULL,
+                            `action` TEXT NOT NULL,
+                            `providerId` TEXT NOT NULL,
+                            `cloudFileId` TEXT,
+                            `status` TEXT NOT NULL,
+                            `bytesTransferred` INTEGER NOT NULL,
+                            `totalBytes` INTEGER NOT NULL,
+                            `uploadSessionUri` TEXT,
+                            `retryCount` INTEGER NOT NULL,
+                            `lastAttempt` INTEGER NOT NULL,
+                            `errorMessage` TEXT
+                        )
+                    """.trimIndent())
+                }
+            }
+
             return Room.databaseBuilder(
                 androidContext(),
                 AppDatabase::class.java,
                 dbName
             )
             .openHelperFactory(factory)
-            .addMigrations(MIGRATION_1_2)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
             .addCallback(ftsCallback)
             .build()
         }
@@ -149,6 +169,7 @@ val databaseModule = module {
     }
     
     single { get<AppDatabase>().mediaFileDao() }
+    single { get<AppDatabase>().cloudSyncTaskDao() }
     
     single<MediaFileRepository> {
         MediaFileRepositoryImpl(get())
@@ -162,9 +183,8 @@ val databaseModule = module {
     
     single { DeepDuplicateCleaner(get()) }
     
-    single { GoogleDriveProvider(androidContext()) }
+    single { GoogleDriveProvider(androidContext(), get(), get()) }
     
-    single { GitHubSyncProvider(get()) }
     
     single { BackgroundManager(get()) }
     
@@ -201,13 +221,13 @@ val databaseModule = module {
 
     viewModel {
         SmartManagerViewModel(
+            applicationContext = androidContext(),
             mediaFileRepository = get(),
             semanticSearchEngine = get(),
             coreSearchEngine = get(),
             autoTagger = get(),
             deepDuplicateCleaner = get(),
             driveProvider = get(),
-            gitHubSyncProvider = get(),
             backgroundManager = get(),
             vaultSessionManager = get(),
             vaultEncryptionManager = get(),

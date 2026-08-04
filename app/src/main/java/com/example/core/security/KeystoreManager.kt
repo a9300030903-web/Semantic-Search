@@ -2,6 +2,7 @@ package com.example.core.security
 
 import android.content.Context
 import android.util.Base64
+import android.security.keystore.KeyPermanentlyInvalidatedException
 import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -31,7 +32,13 @@ object KeystoreManager {
                 
                 return cipher.doFinal(encryptedKey)
             } catch (e: Exception) {
-                // If decryption fails (e.g. key invalidated), we must regenerate
+                // Only auto-regenerate if the key was invalidated (e.g. biometric changes).
+                // Otherwise, rethrow to prevent silent data loss from unexpected errors.
+                if (e is KeyPermanentlyInvalidatedException) {
+                    // Fall through to regeneration logic below
+                } else {
+                    throw e
+                }
             }
         }
 
@@ -69,10 +76,11 @@ object KeystoreManager {
             // AndroidKeystoreGenerator is only loaded dynamically at runtime on Android
             AndroidKeystoreGenerator.generateAndroidKey()
         } catch (e: Throwable) {
-            // Fallback for JVM/Robolectric testing environment where AndroidKeyStore is not available
-            val keyGenerator = KeyGenerator.getInstance("AES")
-            keyGenerator.init(256)
-            keyGenerator.generateKey()
+            // On real Android devices, if Keystore key generation/retrieval fails, 
+            // we throw an exception to prevent silent data loss (as in-memory keys don't persist).
+            throw VaultKeyException("Failed to access or generate Master Key in Android Keystore", e)
         }
     }
 }
+
+class VaultKeyException(message: String, cause: Throwable? = null) : Exception(message, cause)
